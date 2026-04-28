@@ -18,12 +18,16 @@ from langgraph.checkpoint.base import (
 )
 from langgraph.checkpoint.serde.base import SerializerProtocol
 from psycopg import Capabilities, Connection, Cursor, Pipeline
+from psycopg.pq import TransactionStatus
 from psycopg.rows import DictRow, dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
 from langgraph.checkpoint.postgres import _internal
-from langgraph.checkpoint.postgres.base import BasePostgresSaver
+from langgraph.checkpoint.postgres.base import (
+    BasePostgresSaver,
+    adapt_migration_sql_for_transaction,
+)
 from langgraph.checkpoint.postgres.shallow import ShallowPostgresSaver
 
 Conn = _internal.Conn  # For backward compatibility
@@ -96,7 +100,14 @@ class PostgresSaver(BasePostgresSaver):
                 self.MIGRATIONS[version + 1 :],
                 strict=False,
             ):
-                cur.execute(migration)
+                sql = adapt_migration_sql_for_transaction(
+                    migration,
+                    in_transaction=(
+                        cur.connection.info.transaction_status
+                        != TransactionStatus.IDLE
+                    ),
+                )
+                cur.execute(sql)
                 cur.execute("INSERT INTO checkpoint_migrations (v) VALUES (%s)", (v,))
         if self.pipe:
             self.pipe.sync()

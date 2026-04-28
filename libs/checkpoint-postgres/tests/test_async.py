@@ -293,6 +293,35 @@ async def test_null_chars(saver_name: str, test_data) -> None:
         ].metadata["my_key"] == "abc"
 
 
+async def test_setup_inside_transaction_uses_non_concurrent_indexes() -> None:
+    database = f"test_{uuid4().hex[:16]}"
+    async with await AsyncConnection.connect(
+        DEFAULT_POSTGRES_URI, autocommit=True
+    ) as conn:
+        await conn.execute(f"CREATE DATABASE {database}")
+    try:
+        async with await AsyncConnection.connect(
+            DEFAULT_POSTGRES_URI + database,
+            autocommit=False,
+            prepare_threshold=0,
+            row_factory=dict_row,
+        ) as conn:
+            saver = AsyncPostgresSaver(conn)
+            async with conn.transaction():
+                await saver.setup()
+            row = await conn.execute(
+                "SELECT v FROM checkpoint_migrations ORDER BY v DESC LIMIT 1"
+            )
+            result = await row.fetchone()
+            assert result is not None
+            assert result["v"] == len(AsyncPostgresSaver.MIGRATIONS) - 1
+    finally:
+        async with await AsyncConnection.connect(
+            DEFAULT_POSTGRES_URI, autocommit=True
+        ) as conn:
+            await conn.execute(f"DROP DATABASE {database}")
+
+
 @pytest.mark.parametrize("saver_name", ["base", "pool", "pipe"])
 async def test_pending_sends_migration(saver_name: str) -> None:
     async with _saver(saver_name) as saver:

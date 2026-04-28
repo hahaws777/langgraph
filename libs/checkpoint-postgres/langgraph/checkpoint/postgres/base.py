@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+import re
 import warnings
 from collections.abc import Sequence
 from importlib.metadata import version as get_version
@@ -83,6 +84,18 @@ MIGRATIONS = [
     """,
     """ALTER TABLE checkpoint_writes ADD COLUMN IF NOT EXISTS task_path TEXT NOT NULL DEFAULT '';""",
 ]
+
+_CREATE_INDEX_CONCURRENTLY_PATTERN = re.compile(
+    r"\bCREATE\s+INDEX\s+CONCURRENTLY\b",
+    flags=re.IGNORECASE,
+)
+
+
+def adapt_migration_sql_for_transaction(sql: str, *, in_transaction: bool) -> str:
+    """Make migration SQL valid for transaction-scoped setup calls."""
+    if not in_transaction:
+        return sql
+    return _CREATE_INDEX_CONCURRENTLY_PATTERN.sub("CREATE INDEX", sql)
 
 SELECT_SQL = """
 select

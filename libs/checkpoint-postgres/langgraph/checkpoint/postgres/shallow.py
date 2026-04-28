@@ -25,12 +25,16 @@ from psycopg import (
     Cursor,
     Pipeline,
 )
+from psycopg.pq import TransactionStatus
 from psycopg.rows import DictRow, dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool, ConnectionPool
 
 from langgraph.checkpoint.postgres import _ainternal, _internal
-from langgraph.checkpoint.postgres.base import BasePostgresSaver
+from langgraph.checkpoint.postgres.base import (
+    BasePostgresSaver,
+    adapt_migration_sql_for_transaction,
+)
 
 """
 To add a new migration, add a new string to the MIGRATIONS list.
@@ -251,7 +255,14 @@ class ShallowPostgresSaver(BasePostgresSaver):
                 self.MIGRATIONS[version + 1 :],
                 strict=False,
             ):
-                cur.execute(migration)
+                sql = adapt_migration_sql_for_transaction(
+                    migration,
+                    in_transaction=(
+                        cur.connection.info.transaction_status
+                        != TransactionStatus.IDLE
+                    ),
+                )
+                cur.execute(sql)
                 cur.execute("INSERT INTO checkpoint_migrations (v) VALUES (%s)", (v,))
         if self.pipe:
             self.pipe.sync()
@@ -615,7 +626,14 @@ class AsyncShallowPostgresSaver(BasePostgresSaver):
                 self.MIGRATIONS[version + 1 :],
                 strict=False,
             ):
-                await cur.execute(migration)
+                sql = adapt_migration_sql_for_transaction(
+                    migration,
+                    in_transaction=(
+                        cur.connection.info.transaction_status
+                        != TransactionStatus.IDLE
+                    ),
+                )
+                await cur.execute(sql)
                 await cur.execute(
                     "INSERT INTO checkpoint_migrations (v) VALUES (%s)", (v,)
                 )

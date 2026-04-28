@@ -18,6 +18,7 @@ from langgraph.store.base import (
     SearchOp,
 )
 from psycopg import Connection
+from psycopg.rows import dict_row
 
 from langgraph.store.postgres import PostgresStore
 from tests.conftest import (
@@ -837,6 +838,38 @@ def test_nonnull_migrations() -> None:
     for migration in PostgresStore.MIGRATIONS:
         statement = _leading_comment_remover.sub("", migration).split()[0]
         assert statement.strip()
+
+
+def test_setup_inside_transaction_uses_non_concurrent_indexes() -> None:
+    database = f"test_{uuid4().hex[:16]}"
+    uri_parts = DEFAULT_URI.split("/")
+    uri_base = "/".join(uri_parts[:-1])
+    query_params = ""
+    if "?" in uri_parts[-1]:
+        _, query_params = uri_parts[-1].split("?", 1)
+        query_params = "?" + query_params
+    conn_string = f"{uri_base}/{database}{query_params}"
+
+    with Connection.connect(DEFAULT_URI, autocommit=True) as conn:
+        conn.execute(f"CREATE DATABASE {database}")
+    try:
+        with Connection.connect(
+            conn_string,
+            autocommit=False,
+            prepare_threshold=0,
+            row_factory=dict_row,
+        ) as conn:
+            store = PostgresStore(conn)
+            with conn.transaction():
+                store.setup()
+            row = conn.execute(
+                "SELECT v FROM store_migrations ORDER BY v DESC LIMIT 1"
+            ).fetchone()
+            assert row is not None
+            assert row["v"] == len(PostgresStore.MIGRATIONS) - 1
+    finally:
+        with Connection.connect(DEFAULT_URI, autocommit=True) as conn:
+            conn.execute(f"DROP DATABASE {database}")
 
 
 def test_store_ttl(store):

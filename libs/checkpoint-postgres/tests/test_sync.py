@@ -281,6 +281,30 @@ def test_nonnull_migrations() -> None:
         assert statement.strip()
 
 
+def test_setup_inside_transaction_uses_non_concurrent_indexes() -> None:
+    database = f"test_{uuid4().hex[:16]}"
+    with Connection.connect(DEFAULT_POSTGRES_URI, autocommit=True) as conn:
+        conn.execute(f"CREATE DATABASE {database}")
+    try:
+        with Connection.connect(
+            DEFAULT_POSTGRES_URI + database,
+            autocommit=False,
+            prepare_threshold=0,
+            row_factory=dict_row,
+        ) as conn:
+            saver = PostgresSaver(conn)
+            with conn.transaction():
+                saver.setup()
+            row = conn.execute(
+                "SELECT v FROM checkpoint_migrations ORDER BY v DESC LIMIT 1"
+            ).fetchone()
+            assert row is not None
+            assert row["v"] == len(PostgresSaver.MIGRATIONS) - 1
+    finally:
+        with Connection.connect(DEFAULT_POSTGRES_URI, autocommit=True) as conn:
+            conn.execute(f"DROP DATABASE {database}")
+
+
 @pytest.mark.parametrize("saver_name", ["base", "pool", "pipe"])
 def test_pending_sends_migration(saver_name: str) -> None:
     with _saver(saver_name) as saver:

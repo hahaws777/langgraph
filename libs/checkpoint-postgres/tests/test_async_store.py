@@ -19,6 +19,7 @@ from langgraph.store.base import (
     SearchOp,
 )
 from psycopg import AsyncConnection
+from psycopg.rows import dict_row
 
 from langgraph.checkpoint.postgres import _ainternal
 from langgraph.store.postgres import AsyncPostgresStore
@@ -739,3 +740,36 @@ async def test_store_ttl(store):
     # Now has been (TTL_SECONDS-2)*2 > TTL_SECONDS + TTL_SECONDS/2
     results = await store.asearch(ns, query="bar", refresh_ttl=False)
     assert len(results) == 0
+
+
+async def test_setup_inside_transaction_uses_non_concurrent_indexes() -> None:
+    database = f"test_{uuid.uuid4().hex[:16]}"
+    uri_parts = DEFAULT_URI.split("/")
+    uri_base = "/".join(uri_parts[:-1])
+    query_params = ""
+    if "?" in uri_parts[-1]:
+        _, query_params = uri_parts[-1].split("?", 1)
+        query_params = "?" + query_params
+    conn_string = f"{uri_base}/{database}{query_params}"
+
+    async with await AsyncConnection.connect(DEFAULT_URI, autocommit=True) as conn:
+        await conn.execute(f"CREATE DATABASE {database}")
+    try:
+        async with await AsyncConnection.connect(
+            conn_string,
+            autocommit=False,
+            prepare_threshold=0,
+            row_factory=dict_row,
+        ) as conn:
+            store = AsyncPostgresStore(conn)
+            async with conn.transaction():
+                await store.setup()
+            row = await conn.execute(
+                "SELECT v FROM store_migrations ORDER BY v DESC LIMIT 1"
+            )
+            result = await row.fetchone()
+            assert result is not None
+            assert result["v"] == len(AsyncPostgresStore.MIGRATIONS) - 1
+    finally:
+        async with await AsyncConnection.connect(DEFAULT_URI, autocommit=True) as conn:
+            await conn.execute(f"DROP DATABASE {database}")

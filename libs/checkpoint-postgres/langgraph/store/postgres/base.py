@@ -37,6 +37,7 @@ from langgraph.store.base import (
     tokenize_path,
 )
 from psycopg import Capabilities, Connection, Cursor, Pipeline
+from psycopg.pq import TransactionStatus
 from psycopg.rows import DictRow, dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
@@ -44,6 +45,7 @@ from typing_extensions import TypedDict
 
 from langgraph.checkpoint.postgres import _ainternal as _ainternal
 from langgraph.checkpoint.postgres import _internal as _pg_internal
+from langgraph.checkpoint.postgres.base import adapt_migration_sql_for_transaction
 
 if TYPE_CHECKING:
     from langchain_core.embeddings import Embeddings
@@ -1113,6 +1115,13 @@ class PostgresStore(BaseStore, BasePostgresStore[_pg_internal.Conn]):
             version = _get_version(cur, table="store_migrations")
             for v, sql in enumerate(self.MIGRATIONS[version + 1 :], start=version + 1):
                 try:
+                    sql = adapt_migration_sql_for_transaction(
+                        sql,
+                        in_transaction=(
+                            cur.connection.info.transaction_status
+                            != TransactionStatus.IDLE
+                        ),
+                    )
                     cur.execute(sql)
                     cur.execute("INSERT INTO store_migrations (v) VALUES (%s)", (v,))
                 except Exception as e:
@@ -1156,6 +1165,13 @@ class PostgresStore(BaseStore, BasePostgresStore[_pg_internal.Conn]):
                                 )
                             params["index_type"] = it
                         sql = sql % params
+                    sql = adapt_migration_sql_for_transaction(
+                        sql,
+                        in_transaction=(
+                            cur.connection.info.transaction_status
+                            != TransactionStatus.IDLE
+                        ),
+                    )
                     cur.execute(sql)
                     cur.execute("INSERT INTO vector_migrations (v) VALUES (%s)", (v,))
 

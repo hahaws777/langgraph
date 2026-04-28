@@ -18,10 +18,12 @@ from langgraph.store.base import (
 )
 from langgraph.store.base.batch import AsyncBatchedBaseStore
 from psycopg import AsyncConnection, AsyncCursor, AsyncPipeline, Capabilities
+from psycopg.pq import TransactionStatus
 from psycopg.rows import DictRow, dict_row
 from psycopg_pool import AsyncConnectionPool
 
 from langgraph.checkpoint.postgres import _ainternal
+from langgraph.checkpoint.postgres.base import adapt_migration_sql_for_transaction
 from langgraph.store.postgres.base import (
     PLACEHOLDER,
     BasePostgresStore,
@@ -251,6 +253,13 @@ class AsyncPostgresStore(AsyncBatchedBaseStore, BasePostgresStore[_ainternal.Con
         async with self._cursor() as cur:
             version = await _get_version(cur, table="store_migrations")
             for v, sql in enumerate(self.MIGRATIONS[version + 1 :], start=version + 1):
+                sql = adapt_migration_sql_for_transaction(
+                    sql,
+                    in_transaction=(
+                        cur.connection.info.transaction_status
+                        != TransactionStatus.IDLE
+                    ),
+                )
                 await cur.execute(sql)
                 await cur.execute("INSERT INTO store_migrations (v) VALUES (%s)", (v,))
 
@@ -287,6 +296,13 @@ class AsyncPostgresStore(AsyncBatchedBaseStore, BasePostgresStore[_ainternal.Con
                                 )
                             params["index_type"] = it
                         sql = sql % params
+                    sql = adapt_migration_sql_for_transaction(
+                        sql,
+                        in_transaction=(
+                            cur.connection.info.transaction_status
+                            != TransactionStatus.IDLE
+                        ),
+                    )
                     await cur.execute(sql)
                     await cur.execute(
                         "INSERT INTO vector_migrations (v) VALUES (%s)", (v,)
